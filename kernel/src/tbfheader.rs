@@ -23,19 +23,19 @@ crate struct TbfHeaderV2Base {
 pub struct TbfParseError;
 
 impl From<core::array::TryFromSliceError> for TbfParseError {
-    fn from(error: core::array::TryFromSliceError) -> Self {
+    fn from(_error: core::array::TryFromSliceError) -> Self {
         TbfParseError
     }
 }
 
 impl From<core::convert::Infallible> for TbfParseError {
-    fn from(error: core::convert::Infallible) -> Self {
+    fn from(_error: core::convert::Infallible) -> Self {
         TbfParseError
     }
 }
 
 impl From<core::option::NoneError> for TbfParseError {
-    fn from(error: core::option::NoneError) -> Self {
+    fn from(_error: core::option::NoneError) -> Self {
         TbfParseError
     }
 }
@@ -173,7 +173,7 @@ crate struct TbfHeaderV2 {
 #[derive(Debug)]
 crate enum TbfHeader {
     TbfHeaderV2(TbfHeaderV2),
-    Padding(&'static TbfHeaderV2Base),
+    Padding(TbfHeaderV2Base),
 }
 
 impl TbfHeader {
@@ -401,7 +401,7 @@ crate fn parse_tbf_header(header: &'static mut [u8], version: u16) -> Result<Tbf
             // padding "app" between two other apps.
             if remaining.len() == 0 {
                 // Just padding.
-                Ok(TbfHeader::Padding(&tbf_header_base))
+                Ok(TbfHeader::Padding(tbf_header_base))
             } else {
 
 
