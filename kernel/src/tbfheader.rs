@@ -73,6 +73,7 @@ impl core::convert::TryFrom<&mut [u8]> for TbfHeaderV2Base {
 /// Types in TLV structures for each optional block of the header.
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
+#[repr(u16)]
 crate enum TbfHeaderTypes {
     TbfHeaderMain = 1,
     TbfHeaderWriteableFlashRegions = 2,
@@ -335,7 +336,7 @@ crate fn parse_tbf_header(header: &'static mut [u8], version: u16) -> Result<Tbf
             }
 
             // DO WE NEED TO PARSE THE REMAINDER (AKA DO APPS HAVE HEADERS
-            // NOT MULTIPLE OF 4)
+            // NOT MULTIPLE OF 4)??
             // let extra = header_iter.remainder();
 
 
@@ -395,7 +396,7 @@ crate fn parse_tbf_header(header: &'static mut [u8], version: u16) -> Result<Tbf
 
 
             // Get the rest of the header
-            let remaining = header.get(16..)?;
+            let mut remaining = header.get(16..)?;
 
             // If there is nothing left in the header then this is just a
             // padding "app" between two other apps.
@@ -405,7 +406,117 @@ crate fn parse_tbf_header(header: &'static mut [u8], version: u16) -> Result<Tbf
             } else {
 
 
+                // This is an actual app.
 
+                // Places to save fields that we parse out of the header
+                // options.
+                let mut main_pointer: Option<&TbfHeaderV2Main> = None;
+                let mut wfr_pointer: Option<&'static [TbfHeaderV2WriteableFlashRegion]> = None;
+                let mut app_name_str = "";
+
+                // Get the T and L portions of the next header (if it is there).
+
+                while remaining.len() > 0 {
+
+                    let tlv_header: TbfHeaderTlv = remaining.try_into()?;
+                    remaining = header.get(4..)?;
+
+                    match tlv_header.tipe {
+                        TbfHeaderTypes::TbfHeaderMain => {
+                            // Check that the size of the TLV entry matches the
+                            // size of the Main TLV.
+                            if tlv_header.length == 3*4 {
+                                let tbf_main: TbfHeaderV2Main = remaining.try_into()?;
+                                remaining = header.get(12..)?;
+                            }
+                        }
+
+                        TbfHeaderTypes::TbfHeaderWriteableFlashRegions => {
+
+                        }
+
+                        TbfHeaderTypes::TbfHeaderPackageName => {
+
+                        }
+                    }
+
+
+
+                // Loop through the header looking for known options.
+                while remaining_length > mem::size_of::<TbfHeaderTlv>() {
+                    let tbf_tlv_header = unsafe { &*(address.offset(offset) as *const TbfHeaderTlv) };
+
+                    remaining_length -= mem::size_of::<TbfHeaderTlv>();
+                    offset += mem::size_of::<TbfHeaderTlv>() as isize;
+
+                    // Only parse known TLV blocks. There is no type 0.
+                    if (tbf_tlv_header.tipe as u16) < TbfHeaderTypes::Unused as u16
+                        && (tbf_tlv_header.tipe as u16) > 0
+                    {
+                        // This lets us skip unknown header types.
+
+                        match tbf_tlv_header.tipe {
+                            TbfHeaderTypes::TbfHeaderMain =>
+                            /* Main */
+                            {
+                                if remaining_length >= mem::size_of::<TbfHeaderV2Main>()
+                                    && tbf_tlv_header.length as usize
+                                        == mem::size_of::<TbfHeaderV2Main>()
+                                {
+                                    let tbf_main =
+                                        unsafe { &*(address.offset(offset) as *const TbfHeaderV2Main) };
+                                    main_pointer = Some(tbf_main);
+                                }
+                            }
+                            TbfHeaderTypes::TbfHeaderWriteableFlashRegions =>
+                            /* Writeable Flash Regions */
+                            {
+                                // Length must be a multiple of the size of a region definition.
+                                if tbf_tlv_header.length as usize
+                                    % mem::size_of::<TbfHeaderV2WriteableFlashRegion>()
+                                    == 0
+                                {
+                                    let number_regions = tbf_tlv_header.length as usize
+                                        / mem::size_of::<TbfHeaderV2WriteableFlashRegion>();
+                                    let region_start = unsafe { &*(address.offset(offset)
+                                        as *const TbfHeaderV2WriteableFlashRegion) };
+                                    let regions =
+                                        unsafe { slice::from_raw_parts(region_start, number_regions) };
+                                    wfr_pointer = Some(regions);
+                                }
+                            }
+                            TbfHeaderTypes::TbfHeaderPackageName =>
+                            /* Package Name */
+                            {
+                                if remaining_length >= tbf_tlv_header.length as usize {
+                                    let package_name_byte_array = unsafe { slice::from_raw_parts(
+                                        address.offset(offset),
+                                        tbf_tlv_header.length as usize,
+                                    ) };
+                                    let _ =
+                                        str::from_utf8(package_name_byte_array).map(|name_str| {
+                                            app_name_str = name_str;
+                                        });
+                                }
+                            }
+                            TbfHeaderTypes::Unused => {}
+                        }
+                    }
+
+                    // All TLV blocks are padded to 4 bytes, so we need to skip
+                    // more if the length is not a multiple of 4.
+                    remaining_length -= align4!(tbf_tlv_header.length) as usize;
+                    offset += align4!(tbf_tlv_header.length) as isize;
+                }
+
+                let tbf_header = TbfHeaderV2 {
+                    base: tbf_header_base,
+                    main: main_pointer,
+                    package_name: Some(app_name_str),
+                    writeable_regions: wfr_pointer,
+                };
+
+                Some(TbfHeader::TbfHeaderV2(tbf_header))
 
 
 
