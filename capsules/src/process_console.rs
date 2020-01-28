@@ -224,6 +224,22 @@ impl<'a, C: ProcessManagementCapability> ProcessConsole<'a, C> {
                                     },
                                 );
                             });
+                        } else if clean_str.starts_with("info") {
+                            let argument = clean_str.split_whitespace().nth(1);
+                            argument.map(|name| {
+                                self.kernel.process_each_capability(
+                                    &self.capability,
+                                    |_i, proc| {
+                                        let proc_name = proc.get_process_name();
+                                        if proc_name == name {
+                                            let info: KernelInfo = KernelInfo::new(self.kernel);
+                                            let appid = proc.appid();
+                                            let (grants_used, grants_total) = info.number_app_grant_uses(appid, &self.capability);
+                                            debug!("Grant usage: {}/{}", grants_used, grants_total);
+                                        }
+                                    },
+                                );
+                            });
                         } else if clean_str.starts_with("list") {
                             debug!(" PID    Name                Quanta  Syscalls  Dropped Callbacks  Restarts    State");
                             self.kernel
