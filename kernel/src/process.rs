@@ -457,7 +457,7 @@ struct ProcessDebug {
 pub struct Process<'a, C: 'static + Chip> {
     /// Identifier of this process and the index of the process in the process
     /// table.
-    app_id: AppId,
+    app_id: Cell<AppId>,
 
     /// Pointer to the main Kernel struct.
     kernel: &'static Kernel,
@@ -560,7 +560,7 @@ pub struct Process<'a, C: 'static + Chip> {
 
 impl<C: Chip> ProcessType for Process<'a, C> {
     fn appid(&self) -> AppId {
-        self.app_id
+        self.app_id.get()
     }
 
     fn enqueue_task(&self, task: Task) -> bool {
@@ -657,6 +657,17 @@ impl<C: Chip> ProcessType for Process<'a, C> {
                 self.tasks.map(|tasks| {
                     tasks.empty();
                 });
+
+                // We need a new process identifier for this app since the
+                // restarted version is in effect a new process. This is also
+                // necessary to invalidate any stored `AppId`s that point to the
+                // old version of the app. However, the app has not moved
+                // locations in the processes array, so we copy the existing
+                // index.
+                let old_index = self.app_id.get().index;
+                let new_identifier = self.kernel.create_process_identifier();
+                self.app_id
+                    .set(AppId::new(self.kernel, new_identifier, old_index));
 
                 // Update debug information
                 self.debug.map(|debug| {
@@ -1443,7 +1454,13 @@ impl<C: 'static + Chip> Process<'a, C> {
             let mut process: &mut Process<C> =
                 &mut *(process_struct_memory_location as *mut Process<'static, C>);
 
-            process.app_id = AppId::new(kernel, index, index);
+            // Ask the kernel for a unique identifier for this process that is
+            // being created.
+            let unique_identifier = kernel.create_process_identifier();
+
+            process
+                .app_id
+                .set(AppId::new(kernel, unique_identifier, index));
             process.kernel = kernel;
             process.chip = chip;
             process.memory = app_memory;
