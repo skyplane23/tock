@@ -32,7 +32,7 @@ mod test_take_map_cell;
 const NUM_PROCS: usize = 20;
 
 // How should the kernel respond when a process faults.
-const FAULT_RESPONSE: kernel::procs::FaultResponse = kernel::procs::FaultResponse::Panic;
+// const FAULT_RESPONSE: kernel::procs::FaultResponse = kernel::procs::FaultResponse::Restart{ThresholdRestart::new(4)};
 
 // RAM to be shared by all application processes.
 #[link_section = ".app_memory"]
@@ -418,6 +418,9 @@ pub unsafe fn reset_handler() {
 
     debug!("Initialization complete. Entering main loop");
 
+    let restart_policy = static_init!(kernel::procs::ThresholdRestart, kernel::procs::ThresholdRestart::new(4));
+    let fault_response = kernel::procs::FaultResponse::Restart(restart_policy);
+
     extern "C" {
         /// Beginning of the ROM region containing app images.
         ///
@@ -431,7 +434,7 @@ pub unsafe fn reset_handler() {
         &_sapps as *const u8,
         &mut APP_MEMORY,
         &mut PROCESSES,
-        FAULT_RESPONSE,
+        fault_response,
         &process_management_capability,
     );
     board_kernel.kernel_loop(&hail, chip, Some(&hail.ipc), &main_loop_capability);
