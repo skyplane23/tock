@@ -1,7 +1,9 @@
 //! Tock Binary Format Header definitions and parsing code.
 
-use core::{mem, slice, str};
+use core::{mem, str};
 use core::convert::TryInto;
+
+use crate::debug;
 
 /// Takes a value and rounds it up to be aligned % 4
 macro_rules! align4 {
@@ -9,6 +11,51 @@ macro_rules! align4 {
         ($e) + ((4 - (($e) % 4)) % 4)
     };
 }
+
+/// Error when parsing an app's TBF header.
+pub enum TbfParseError {
+    /// Not enough bytes in the buffer to parse the expected field.
+    BadLength,
+
+    /// Unknown version of the TBF header.
+    UnsupportedVersion,
+
+    /// Checksum calculation did not match what is stored in the TBF header.
+    ChecksumMismatch,
+
+    /// The app name in the TBF header could not be successfully parsed as a
+    /// UTF-8 string.
+    BadName,
+
+    /// Other error.
+    Error,
+}
+
+impl From<core::array::TryFromSliceError> for TbfParseError {
+    fn from(_error: core::array::TryFromSliceError) -> Self {
+        TbfParseError::BadLength
+    }
+}
+
+impl From<core::convert::Infallible> for TbfParseError {
+    fn from(_error: core::convert::Infallible) -> Self {
+        TbfParseError::Error
+    }
+}
+
+impl From<core::option::NoneError> for TbfParseError {
+    fn from(_error: core::option::NoneError) -> Self {
+        TbfParseError::Error
+    }
+}
+
+impl From<core::str::Utf8Error> for TbfParseError {
+    fn from(_error: core::str::Utf8Error) -> Self {
+        TbfParseError::BadName
+    }
+}
+
+// TBF structure
 
 /// TBF fields that must be present in all v2 headers.
 #[derive(Clone, Copy, Debug)]
@@ -20,78 +67,17 @@ crate struct TbfHeaderV2Base {
     checksum: u32,
 }
 
-pub struct TbfParseError;
-
-impl From<core::array::TryFromSliceError> for TbfParseError {
-    fn from(_error: core::array::TryFromSliceError) -> Self {
-        TbfParseError
-    }
-}
-
-impl From<core::convert::Infallible> for TbfParseError {
-    fn from(_error: core::convert::Infallible) -> Self {
-        TbfParseError
-    }
-}
-
-impl From<core::option::NoneError> for TbfParseError {
-    fn from(_error: core::option::NoneError) -> Self {
-        TbfParseError
-    }
-}
-
-
-impl core::convert::TryFrom<&[u8]> for TbfHeaderV2Base {
-    type Error = TbfParseError;
-
-    fn try_from(b: &[u8]) -> Result<TbfHeaderV2Base, Self::Error> {
-        Ok(TbfHeaderV2Base {
-            version: u16::from_le_bytes(b.get(0..1)?.try_into()?),
-            header_size: u16::from_le_bytes(b.get(2..3)?.try_into()?),
-            total_size: u32::from_le_bytes(b.get(4..7)?.try_into()?),
-            flags: u32::from_le_bytes(b.get(8..11)?.try_into()?),
-            checksum: u32::from_le_bytes(b.get(12..15)?.try_into()?),
-        })
-    }
-
-    // type Error = ();
-    // fn try_from(b: &mut [u8]) -> Result<TbfHeaderV2Base, Self::Error> {
-    //     if b.len() >= 16 {
-    //         Ok(TbfHeaderV2Base {
-    //             version: u16::from_be_bytes([b[0], b[1]]),
-    //             header_size: u16::from_be_bytes([b[2], b[3]]),
-    //             total_size: u32::from_be_bytes([b[4], b[5], b[6], b[7]]),
-    //             flags: u32::from_be_bytes([b[8], b[9], b[10], b[11]]),
-    //             checksum: u32::from_be_bytes([b[12], b[13], b[14], b[15]]),
-    //         })
-    //     } else {
-    //         Err(())
-    //     }
-    // }
-}
-
 /// Types in TLV structures for each optional block of the header.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
-#[repr(u16)]
 crate enum TbfHeaderTypes {
     TbfHeaderMain = 1,
     TbfHeaderWriteableFlashRegions = 2,
     TbfHeaderPackageName = 3,
-    Unused = 5,
-}
 
-impl core::convert::TryFrom<u16> for TbfHeaderTypes {
-    type Error = TbfParseError;
-
-    fn try_from(h: u16) -> Result<TbfHeaderTypes, Self::Error> {
-        match h {
-            1 => Ok(TbfHeaderTypes::TbfHeaderMain),
-            2 => Ok(TbfHeaderTypes::TbfHeaderWriteableFlashRegions),
-            3 => Ok(TbfHeaderTypes::TbfHeaderPackageName),
-            _ => Err(TbfParseError)
-        }
-    }
+    /// Some field in the header that we do not understand. Since the TLV format
+    /// specifies the length of each section, if we get a field we do not
+    /// understand we just skip it, rather than throwing an error.
+    Unknown = 5,
 }
 
 /// The TLV header (T and L).
@@ -99,28 +85,6 @@ impl core::convert::TryFrom<u16> for TbfHeaderTypes {
 crate struct TbfHeaderTlv {
     tipe: TbfHeaderTypes,
     length: u16,
-}
-
-// impl core::convert::TryFrom<&mut [u8]> for TbfHeaderTlv {
-//     type Error = TbfParseError;
-
-//     fn try_from(b: &mut [u8]) -> Result<TbfHeaderTlv, Self::Error> {
-//         Ok(TbfHeaderTlv {
-//             tipe: u16::from_le_bytes(b.get(0..1)?.try_into()?).try_into()?,
-//             length: u16::from_le_bytes(b.get(2..3)?.try_into()?),
-//         })
-//     }
-// }
-
-impl core::convert::TryFrom<&[u8]> for TbfHeaderTlv {
-    type Error = TbfParseError;
-
-    fn try_from(b: &[u8]) -> Result<TbfHeaderTlv, Self::Error> {
-        Ok(TbfHeaderTlv {
-            tipe: u16::from_le_bytes(b.get(0..1)?.try_into()?).try_into()?,
-            length: u16::from_le_bytes(b.get(2..3)?.try_into()?),
-        })
-    }
 }
 
 /// The v2 main section for apps.
@@ -134,18 +98,6 @@ crate struct TbfHeaderV2Main {
     minimum_ram_size: u32,
 }
 
-impl core::convert::TryFrom<&[u8]> for TbfHeaderV2Main {
-    type Error = TbfParseError;
-
-    fn try_from(b: &[u8]) -> Result<TbfHeaderV2Main, Self::Error> {
-        Ok(TbfHeaderV2Main {
-            init_fn_offset: u32::from_le_bytes(b.get(0..3)?.try_into()?),
-            protected_size: u32::from_le_bytes(b.get(4..7)?.try_into()?),
-            minimum_ram_size: u32::from_le_bytes(b.get(8..11)?.try_into()?),
-        })
-    }
-}
-
 /// Writeable flash regions only need an offset and size.
 ///
 /// There can be multiple (or zero) flash regions defined, so this is its own
@@ -156,25 +108,79 @@ crate struct TbfHeaderV2WriteableFlashRegion {
     writeable_flash_region_size: u32,
 }
 
+/// Single header that can contain all parts of a v2 header.
+#[derive(Clone, Copy, Debug)]
+crate struct TbfHeaderV2 {
+    base: TbfHeaderV2Base,
+    // main: Option<&'static TbfHeaderV2Main>,
+    main: Option<TbfHeaderV2Main>,
+    package_name: Option<&'static str>,
+    writeable_regions: Option<&'static [TbfHeaderV2WriteableFlashRegion]>,
+}
+
+// Conversion functions from slices to the various TBF fields.
+
+impl core::convert::TryFrom<&[u8]> for TbfHeaderV2Base {
+    type Error = TbfParseError;
+
+    fn try_from(b: &[u8]) -> Result<TbfHeaderV2Base, Self::Error> {
+        Ok(TbfHeaderV2Base {
+            version: u16::from_le_bytes(b.get(0..2)?.try_into()?),
+            header_size: u16::from_le_bytes(b.get(2..4)?.try_into()?),
+            total_size: u32::from_le_bytes(b.get(4..8)?.try_into()?),
+            flags: u32::from_le_bytes(b.get(8..12)?.try_into()?),
+            checksum: u32::from_le_bytes(b.get(12..16)?.try_into()?),
+        })
+    }
+}
+
+impl core::convert::TryFrom<u16> for TbfHeaderTypes {
+    type Error = TbfParseError;
+
+    fn try_from(h: u16) -> Result<TbfHeaderTypes, Self::Error> {
+        match h {
+            1 => Ok(TbfHeaderTypes::TbfHeaderMain),
+            2 => Ok(TbfHeaderTypes::TbfHeaderWriteableFlashRegions),
+            3 => Ok(TbfHeaderTypes::TbfHeaderPackageName),
+            _ => Ok(TbfHeaderTypes::Unknown),
+        }
+    }
+}
+
+impl core::convert::TryFrom<&[u8]> for TbfHeaderTlv {
+    type Error = TbfParseError;
+
+    fn try_from(b: &[u8]) -> Result<TbfHeaderTlv, Self::Error> {
+        Ok(TbfHeaderTlv {
+            tipe: u16::from_le_bytes(b.get(0..2)?.try_into()?).try_into()?,
+            length: u16::from_le_bytes(b.get(2..4)?.try_into()?),
+        })
+    }
+}
+
+impl core::convert::TryFrom<&[u8]> for TbfHeaderV2Main {
+    type Error = TbfParseError;
+
+    fn try_from(b: &[u8]) -> Result<TbfHeaderV2Main, Self::Error> {
+        Ok(TbfHeaderV2Main {
+            init_fn_offset: u32::from_le_bytes(b.get(0..4)?.try_into()?),
+            protected_size: u32::from_le_bytes(b.get(4..8)?.try_into()?),
+            minimum_ram_size: u32::from_le_bytes(b.get(8..12)?.try_into()?),
+        })
+    }
+}
+
 impl core::convert::TryFrom<&mut [u8]> for TbfHeaderV2WriteableFlashRegion {
     type Error = TbfParseError;
 
     fn try_from(b: &mut [u8]) -> Result<TbfHeaderV2WriteableFlashRegion, Self::Error> {
         Ok(TbfHeaderV2WriteableFlashRegion {
-            writeable_flash_region_offset: u32::from_le_bytes(b.get(0..3)?.try_into()?),
-            writeable_flash_region_size: u32::from_le_bytes(b.get(4..7)?.try_into()?),
+            writeable_flash_region_offset: u32::from_le_bytes(b.get(0..4)?.try_into()?),
+            writeable_flash_region_size: u32::from_le_bytes(b.get(4..8)?.try_into()?),
         })
     }
 }
 
-/// Single header that can contain all parts of a v2 header.
-#[derive(Clone, Copy, Debug)]
-crate struct TbfHeaderV2 {
-    base: &'static TbfHeaderV2Base,
-    main: Option<&'static TbfHeaderV2Main>,
-    package_name: Option<&'static str>,
-    writeable_regions: Option<&'static [TbfHeaderV2WriteableFlashRegion]>,
-}
 
 /// Type that represents the fields of the Tock Binary Format header.
 ///
@@ -296,42 +302,50 @@ crate fn parse_tbf_header_lengths(app: &'static [u8; 8]) -> Result<(u16, u16, u3
     // We trust that the version number has been checked prior to running this
     // parsing code. That is, whatever loaded this application has verified that
     // the version is valid and therefore we can trust it.
-    let version = u16::from_le_bytes(app.get(0..1).ok_or(TbfParseError)?.try_into()?);
+    let version = u16::from_le_bytes(app.get(0..2).ok_or(TbfParseError::BadLength)?.try_into()?);
 
     match version {
         2 => {
             // In version 2, the next 16 bits after the version represent
             // the size of the TBF header in bytes.
-            let tbf_header_size = u16::from_le_bytes(app.get(2..3).ok_or(TbfParseError)?.try_into()?);
+            let tbf_header_size = u16::from_le_bytes(app.get(2..4).ok_or(TbfParseError::BadLength)?.try_into()?);
 
             // The next 4 bytes are the size of the entire app's TBF space
             // including the header. This also must be checked before parsing
             // this header and we trust the value in flash.
-            let tbf_size = u32::from_le_bytes(app.get(4..7).ok_or(TbfParseError)?.try_into()?);
+            let tbf_size = u32::from_le_bytes(app.get(4..8).ok_or(TbfParseError::BadLength)?.try_into()?);
 
             // Check that the header length isn't greater than the entire
             // app. If that at least looks good then return the sizes.
             if u32::from(tbf_header_size) > tbf_size {
-                Err(TbfParseError)
+                Err(TbfParseError::BadLength)
             } else {
+
+                debug!("v: {}, h: {}, a: {}", version, tbf_header_size, tbf_size);
+
                 Ok((version, tbf_header_size, tbf_size))
             }
         }
 
-        _ => Err(TbfParseError)
+        _ => Err(TbfParseError::UnsupportedVersion)
     }
 }
 
+/// Parse a TBF header stored in flash.
+///
+/// The `header` must be a slice that only contains the TBF header. The caller
+/// should use the `parse_tbf_header_lengths()` function to determine this
+/// length to create the correct sized slice.
 crate fn parse_tbf_header(header: &'static [u8], version: u16) -> Result<TbfHeader, TbfParseError> {
     match version {
         2 => {
+            // Get the required base. This will succeed because we parsed the
+            // first bit of the header already in `parse_tbf_header_lengths()`.
             let tbf_header_base: TbfHeaderV2Base = header.try_into()?;
 
             // Calculate checksum. The checksum is the XOR of each 4 byte word
             // in the header.
             let mut checksum: u32 = 0;
-
-            // let header_size: usize = tbf_header_base.header_size.try_into()?;
 
             // Get an iterator across 4 byte fields in the header.
             let header_iter = header.chunks_exact(4);
@@ -350,63 +364,14 @@ crate fn parse_tbf_header(header: &'static [u8], version: u16) -> Result<TbfHead
             // NOT MULTIPLE OF 4)??
             // let extra = header_iter.remainder();
 
-
+            // Verify the header matches.
             if checksum != tbf_header_base.checksum {
-                return Err(TbfParseError);
+                return Err(TbfParseError::ChecksumMismatch);
             }
 
-
-
-
-
-
-            // let mut num_chunks = tbf_header_base.header_size as usize / 4;
-            // let leftover_bytes = tbf_header_base.header_size as usize % 4;
-            // if leftover_bytes != 0 {
-            //     num_chunks += 1;
-            // }
-
-
-            // for (i, chunk) in app.chunks(4).take(num_chunks).enumerate() {
-            //     let word =
-            //     if i == 3 {
-            //         // Skip the checksum field.
-            //     } else if i == num_chunks - 1 && leftover_bytes != 0 {
-            //         // In this case, we don't want to use the entire word.
-            //         checksum ^= *chunk & (0xFFFFFFFF >> (4 - leftover_bytes));
-            //     } else {
-            //         checksum ^= *chunk;
-            //     }
-            // }
-
-
-
-
-
-            // let mut chunks = tbf_header_base.header_size as usize / 4;
-            // let leftover_bytes = tbf_header_base.header_size as usize % 4;
-            // if leftover_bytes != 0 {
-            //     chunks += 1;
-            // }
-            // let mut checksum: u32 = 0;
-            // let header = unsafe { slice::from_raw_parts(address as *const u32, chunks) };
-            // for (i, chunk) in header.iter().enumerate() {
-            //     if i == 3 {
-            //         // Skip the checksum field.
-            //     } else if i == chunks - 1 && leftover_bytes != 0 {
-            //         // In this case, we don't want to use the entire word.
-            //         checksum ^= *chunk & (0xFFFFFFFF >> (4 - leftover_bytes));
-            //     } else {
-            //         checksum ^= *chunk;
-            //     }
-            // }
-
-            // if checksum != tbf_header_base.checksum {
-            //     return None;
-            // }
-
-
-            // Get the rest of the header
+            // Get the rest of the header. The `remaining` variable will
+            // continue to hold the remainder of the header we have not
+            // processed.
             let mut remaining = header.get(16..)?;
 
             // If there is nothing left in the header then this is just a
@@ -414,164 +379,68 @@ crate fn parse_tbf_header(header: &'static [u8], version: u16) -> Result<TbfHead
             if remaining.len() == 0 {
                 // Just padding.
                 Ok(TbfHeader::Padding(tbf_header_base))
+
             } else {
-
-
                 // This is an actual app.
 
                 // Places to save fields that we parse out of the header
                 // options.
-                let mut main_pointer: Option<&TbfHeaderV2Main> = None;
+                let mut main_pointer: Option<TbfHeaderV2Main> = None;
                 let mut wfr_pointer: Option<&'static [TbfHeaderV2WriteableFlashRegion]> = None;
                 let mut app_name_str = "";
 
-                // Get the T and L portions of the next header (if it is there).
 
+                // Iterate the remainder of the header looking for TLV entries.
                 while remaining.len() > 0 {
-
+                    // Get the T and L portions of the next header (if it is
+                    // there).
                     let tlv_header: TbfHeaderTlv = remaining.try_into()?;
-                    remaining = header.get(4..)?;
+                    remaining = remaining.get(4..)?;
 
                     match tlv_header.tipe {
                         TbfHeaderTypes::TbfHeaderMain => {
+                            let entry_len = mem::size_of::<TbfHeaderV2Main>();
+
                             // Check that the size of the TLV entry matches the
                             // size of the Main TLV.
-                            if tlv_header.length == 3*4 {
-                                let tbf_main: TbfHeaderV2Main = remaining.try_into()?;
-                                remaining = header.get(12..)?;
-
-                                main_pointer = Some(&tbf_main);
+                            if tlv_header.length as usize == entry_len {
+                                main_pointer = Some(remaining.try_into()?);
+                                remaining = remaining.get(entry_len..)?;
                             }
                         }
 
                         TbfHeaderTypes::TbfHeaderWriteableFlashRegions => {
-
+                            debug!("h");
                         }
 
                         TbfHeaderTypes::TbfHeaderPackageName => {
-
                             let name_buf = remaining.get(0..tlv_header.length as usize)?;
 
                             str::from_utf8(name_buf).map(|name_str| {
                                 app_name_str = name_str;
-                            });
-
-
-
-                            // let tbf_main: TbfHeaderV2Main = remaining.try_into()?;
-
-
-                            // if remaining_length >= tbf_tlv_header.length as usize {
-                            //     let package_name_byte_array = unsafe { slice::from_raw_parts(
-                            //         address.offset(offset),
-                            //         tbf_tlv_header.length as usize,
-                            //     ) };
-                            //     let _ =
-                            //         str::from_utf8(package_name_byte_array).map(|name_str| {
-                            //             app_name_str = name_str;
-                            //         });
-                            // }
-                            //
-
+                            })?;
 
                             // All TLV blocks are padded to 4 bytes, so we need to skip
                             // more if the length is not a multiple of 4.
                             let skip_len: usize = align4!(tlv_header.length as usize);
-                            remaining = header.get(skip_len..)?;
-
-
-
+                            remaining = remaining.get(skip_len..)?;
                         }
 
                         _ => {}
                     }
                 }
 
-
-
-                // // Loop through the header looking for known options.
-                // while remaining_length > mem::size_of::<TbfHeaderTlv>() {
-                //     let tbf_tlv_header = unsafe { &*(address.offset(offset) as *const TbfHeaderTlv) };
-
-                //     remaining_length -= mem::size_of::<TbfHeaderTlv>();
-                //     offset += mem::size_of::<TbfHeaderTlv>() as isize;
-
-                //     // Only parse known TLV blocks. There is no type 0.
-                //     if (tbf_tlv_header.tipe as u16) < TbfHeaderTypes::Unused as u16
-                //         && (tbf_tlv_header.tipe as u16) > 0
-                //     {
-                //         // This lets us skip unknown header types.
-
-                //         match tbf_tlv_header.tipe {
-                //             TbfHeaderTypes::TbfHeaderMain =>
-                //             /* Main */
-                //             {
-                //                 if remaining_length >= mem::size_of::<TbfHeaderV2Main>()
-                //                     && tbf_tlv_header.length as usize
-                //                         == mem::size_of::<TbfHeaderV2Main>()
-                //                 {
-                //                     let tbf_main =
-                //                         unsafe { &*(address.offset(offset) as *const TbfHeaderV2Main) };
-                //                     main_pointer = Some(tbf_main);
-                //                 }
-                //             }
-                //             TbfHeaderTypes::TbfHeaderWriteableFlashRegions =>
-                //             /* Writeable Flash Regions */
-                //             {
-                //                 // Length must be a multiple of the size of a region definition.
-                //                 if tbf_tlv_header.length as usize
-                //                     % mem::size_of::<TbfHeaderV2WriteableFlashRegion>()
-                //                     == 0
-                //                 {
-                //                     let number_regions = tbf_tlv_header.length as usize
-                //                         / mem::size_of::<TbfHeaderV2WriteableFlashRegion>();
-                //                     let region_start = unsafe { &*(address.offset(offset)
-                //                         as *const TbfHeaderV2WriteableFlashRegion) };
-                //                     let regions =
-                //                         unsafe { slice::from_raw_parts(region_start, number_regions) };
-                //                     wfr_pointer = Some(regions);
-                //                 }
-                //             }
-                //             TbfHeaderTypes::TbfHeaderPackageName =>
-                //             /* Package Name */
-                //             {
-                //                 if remaining_length >= tbf_tlv_header.length as usize {
-                //                     let package_name_byte_array = unsafe { slice::from_raw_parts(
-                //                         address.offset(offset),
-                //                         tbf_tlv_header.length as usize,
-                //                     ) };
-                //                     let _ =
-                //                         str::from_utf8(package_name_byte_array).map(|name_str| {
-                //                             app_name_str = name_str;
-                //                         });
-                //                 }
-                //             }
-                //             TbfHeaderTypes::Unused => {}
-                //         }
-                //     }
-
-                //     // All TLV blocks are padded to 4 bytes, so we need to skip
-                //     // more if the length is not a multiple of 4.
-                //     remaining_length -= align4!(tbf_tlv_header.length) as usize;
-                //     offset += align4!(tbf_tlv_header.length) as isize;
-                // }
-
                 let tbf_header = TbfHeaderV2 {
-                    base: &tbf_header_base,
+                    base: tbf_header_base,
                     main: main_pointer,
                     package_name: Some(app_name_str),
                     writeable_regions: wfr_pointer,
                 };
 
                 Ok(TbfHeader::TbfHeaderV2(tbf_header))
-
-
-
-
-                // Err(TbfParseError)
             }
         }
-        _ => Err(TbfParseError)
+        _ => Err(TbfParseError::UnsupportedVersion)
     }
 }
 

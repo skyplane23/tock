@@ -7,6 +7,8 @@
 #![no_main]
 #![deny(missing_docs)]
 
+use core::slice;
+
 use capsules::virtual_alarm::VirtualMuxAlarm;
 use capsules::virtual_i2c::{I2CDevice, MuxI2C};
 use capsules::virtual_spi::{MuxSpiMaster, VirtualSpiMasterDevice};
@@ -433,7 +435,7 @@ pub unsafe fn reset_handler() {
         board_kernel,
         chip,
         // &_sapps as *const u8,
-        slice::from_raw_parts(&_sapps as *const u8, 100000);
+        slice::from_raw_parts(&_sapps as *const u8, 100000),
         &mut APP_MEMORY,
         &mut PROCESSES,
         FAULT_RESPONSE,
