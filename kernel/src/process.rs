@@ -4,6 +4,7 @@ use core::cell::Cell;
 use core::fmt::Write;
 use core::ptr::write_volatile;
 use core::{mem, ptr, slice, str};
+use core::convert::TryInto;
 
 use crate::callback::{AppId, CallbackId};
 use crate::capabilities::ProcessManagementCapability;
@@ -20,6 +21,34 @@ use crate::syscall::{self, Syscall, UserspaceKernelBoundary};
 use crate::tbfheader;
 use core::cmp::max;
 
+
+pub struct ProcessLoadError;
+
+impl From<core::array::TryFromSliceError> for ProcessLoadError {
+    fn from(_error: core::array::TryFromSliceError) -> Self {
+        ProcessLoadError
+    }
+}
+
+// impl From<core::convert::Infallible> for ProcessLoadError {
+//     fn from(_error: core::convert::Infallible) -> Self {
+//         ProcessLoadError
+//     }
+// }
+
+impl From<core::option::NoneError> for ProcessLoadError {
+    fn from(_error: core::option::NoneError) -> Self {
+        ProcessLoadError
+    }
+}
+
+impl From<tbfheader::TbfParseError> for ProcessLoadError {
+    fn from(_error: tbfheader::TbfParseError) -> Self {
+        ProcessLoadError
+    }
+}
+
+
 /// Helper function to load processes from flash into an array of active
 /// processes. This is the default template for loading processes, but a board
 /// is able to create its own `load_processes()` function and use that instead.
@@ -33,43 +62,45 @@ use core::cmp::max;
 pub fn load_processes<C: Chip>(
     kernel: &'static Kernel,
     chip: &'static C,
-    start_of_flash: *const u8,
+    app_flash: &'static [u8],
     app_memory: &mut [u8],
     procs: &'static mut [Option<&'static dyn ProcessType>],
     fault_response: FaultResponse,
     _capability: &dyn ProcessManagementCapability,
-) {
-    let mut apps_in_flash_ptr = start_of_flash;
+) -> Result<(), ProcessLoadError> {
+    // let mut apps_in_flash_ptr = start_of_flash;
     let mut app_memory_ptr = app_memory.as_mut_ptr();
     let mut app_memory_size = app_memory.len();
 
-    if config::CONFIG.debug_load_processes {
-        debug!(
-            "Loading processes from flash={:#010X} into sram=[{:#010X}:{:#010X}]",
-            start_of_flash as usize,
-            app_memory_ptr as usize,
-            app_memory_ptr as usize + app_memory_size
-        );
-    }
+    let mut remaining_flash = app_flash;
+
+    // if config::CONFIG.debug_load_processes {
+    //     debug!(
+    //         "Loading processes from flash={:#010X} into sram=[{:#010X}:{:#010X}]",
+    //         start_of_flash as usize,
+    //         app_memory_ptr as usize,
+    //         app_memory_ptr as usize + app_memory_size
+    //     );
+    // }
 
     for i in 0..procs.len() {
         unsafe {
             let (process, flash_offset, memory_offset) = Process::create(
                 kernel,
                 chip,
-                apps_in_flash_ptr,
+                remaining_flash,
                 app_memory_ptr,
                 app_memory_size,
                 fault_response,
                 i,
-            );
+            )?;
 
             if config::CONFIG.debug_load_processes {
                 debug!(
                     "Loaded process[{}] from flash=[{:#010X}:{:#010X}] into sram=[{:#010X}:{:#010X}] = {:?}",
                     i,
-                    apps_in_flash_ptr as usize,
-                    apps_in_flash_ptr as usize + flash_offset,
+                    remaining_flash.as_ptr() as usize,
+                    remaining_flash.as_ptr() as usize + flash_offset,
                     app_memory_ptr as usize,
                     app_memory_ptr as usize + memory_offset,
                     process.map(|p| p.get_process_name())
@@ -88,11 +119,15 @@ pub fn load_processes<C: Chip>(
                 procs[i] = process;
             }
 
-            apps_in_flash_ptr = apps_in_flash_ptr.add(flash_offset);
+            remaining_flash = remaining_flash.get(flash_offset..)?;
+
+            // apps_in_flash_ptr = apps_in_flash_ptr.add(flash_offset);
             app_memory_ptr = app_memory_ptr.add(memory_offset);
             app_memory_size -= memory_offset;
         }
     }
+
+    Ok(())
 }
 
 /// This trait is implemented by process structs.
@@ -1270,44 +1305,67 @@ impl<C: 'static + Chip> Process<'a, C> {
     crate unsafe fn create(
         kernel: &'static Kernel,
         chip: &'static C,
-        app_flash_address: *const u8,
+        remaining_app_flash: &'static [u8],
         remaining_app_memory: *mut u8,
         remaining_app_memory_size: usize,
         fault_response: FaultResponse,
         index: usize,
-    ) -> (Option<&'static dyn ProcessType>, usize, usize) {
-        if let Some(tbf_header) = tbfheader::parse_and_validate_tbf_header(app_flash_address) {
+    ) -> Result<(Option<&'static dyn ProcessType>, usize, usize), ProcessLoadError> {
+
+
+        // Get the first eight bytes of flash, and pass them to tbfheader to
+        // parse out the length of the tbf header and app. We then use those
+        // values to see if we have enough flash remaining to parse the
+        // remainder of the header.
+        let (version, header_length, app_length) = tbfheader::parse_tbf_header_lengths(remaining_app_flash.get(0..8)?.try_into()?)?;
+
+        // Get slices for all of the flash for the app, and for just the header.
+        // This lets us error out here if there is not enough flash remaining
+        // for an app of this size.
+        let app_flash = remaining_app_flash.get(0..app_length as usize)?;
+        let header_flash = app_flash.get(0..header_length as usize)?;
+
+        // If we get here, then we can actually parse the full TBF header to
+        // see if this is a valid app.
+        let tbf_header = tbfheader::parse_tbf_header(header_flash, version)?;
+
+
+        // match tbf_header {
+        //     tbfheader::TbfHeader::Padding
+        // }
+
+        // if let Some(tbf_header) = tbfheader::parse_and_validate_tbf_header(app_flash_address) {
             let app_flash_size = tbf_header.get_total_size() as usize;
             let process_name = tbf_header.get_package_name();
 
             // If this isn't an app (i.e. it is padding) or it is an app but it
             // isn't enabled, then we can skip it but increment past its flash.
             if !tbf_header.is_app() || !tbf_header.enabled() {
-                if config::CONFIG.debug_load_processes {
-                    if !tbf_header.is_app() {
-                        debug!(
-                            "[!] flash=[{:#010X}:{:#010X}] process={:?} - process isn't an app",
-                            app_flash_address as usize,
-                            app_flash_address as usize + app_flash_size,
-                            process_name
-                        );
-                    }
-                    if !tbf_header.enabled() {
-                        debug!(
-                            "[!] flash=[{:#010X}:{:#010X}] process={:?} - process isn't enabled",
-                            app_flash_address as usize,
-                            app_flash_address as usize + app_flash_size,
-                            process_name
-                        );
-                    }
-                }
-                return (None, app_flash_size, 0);
+                // if config::CONFIG.debug_load_processes {
+                //     if !tbf_header.is_app() {
+                //         debug!(
+                //             "[!] flash=[{:#010X}:{:#010X}] process={:?} - process isn't an app",
+                //             app_flash_address as usize,
+                //             app_flash_address as usize + app_flash_size,
+                //             process_name
+                //         );
+                //     }
+                //     if !tbf_header.enabled() {
+                //         debug!(
+                //             "[!] flash=[{:#010X}:{:#010X}] process={:?} - process isn't enabled",
+                //             app_flash_address as usize,
+                //             app_flash_address as usize + app_flash_size,
+                //             process_name
+                //         );
+                //     }
+                // }
+                return Ok((None, app_flash_size, 0));
             }
 
             // Otherwise, actually load the app.
             let mut min_app_ram_size = tbf_header.get_minimum_app_ram_size() as usize;
             let init_fn =
-                app_flash_address.offset(tbf_header.get_init_function_offset() as isize) as usize;
+                app_flash.as_ptr().offset(tbf_header.get_init_function_offset() as isize) as usize;
 
             // Initialize MPU region configuration.
             let mut mpu_config: <<C as Chip>::MPU as MPU>::MpuConfig = Default::default();
@@ -1316,7 +1374,8 @@ impl<C: 'static + Chip> Process<'a, C> {
             if chip
                 .mpu()
                 .allocate_region(
-                    app_flash_address,
+                    // TODO CHANGE TO SLICE
+                    app_flash.as_ptr(),
                     app_flash_size,
                     app_flash_size,
                     mpu::Permissions::ReadExecuteOnly,
@@ -1324,15 +1383,15 @@ impl<C: 'static + Chip> Process<'a, C> {
                 )
                 .is_none()
             {
-                if config::CONFIG.debug_load_processes {
-                    debug!(
-                        "[!] flash=[{:#010X}:{:#010X}] process={:?} - couldn't allocate flash region",
-                            app_flash_address as usize,
-                            app_flash_address as usize + app_flash_size,
-                            process_name
-                    );
-                }
-                return (None, app_flash_size, 0);
+                // if config::CONFIG.debug_load_processes {
+                //     debug!(
+                //         "[!] flash=[{:#010X}:{:#010X}] process={:?} - couldn't allocate flash region",
+                //             app_flash_address as usize,
+                //             app_flash_address as usize + app_flash_size,
+                //             process_name
+                //     );
+                // }
+                return Ok((None, app_flash_size, 0));
             }
 
             // Determine how much space we need in the application's
@@ -1378,16 +1437,16 @@ impl<C: 'static + Chip> Process<'a, C> {
                 Some((memory_start, memory_size)) => (memory_start, memory_size),
                 None => {
                     // Failed to load process. Insufficient memory.
-                    if config::CONFIG.debug_load_processes {
-                        debug!(
-                            "[!] flash=[{:#010X}:{:#010X}] process={:?} - couldn't allocate memory region of size >= {:#X}",
-                            app_flash_address as usize,
-                            app_flash_address as usize + app_flash_size,
-                            process_name,
-                            min_total_memory_size
-                        );
-                    }
-                    return (None, app_flash_size, 0);
+                    // if config::CONFIG.debug_load_processes {
+                    //     debug!(
+                    //         "[!] flash=[{:#010X}:{:#010X}] process={:?} - couldn't allocate memory region of size >= {:#X}",
+                    //         app_flash_address as usize,
+                    //         app_flash_address as usize + app_flash_size,
+                    //         process_name,
+                    //         min_total_memory_size
+                    //     );
+                    // }
+                    return Ok((None, app_flash_size, 0));
                 }
             };
 
@@ -1452,7 +1511,8 @@ impl<C: 'static + Chip> Process<'a, C> {
             process.current_stack_pointer = Cell::new(initial_stack_pointer);
             process.original_stack_pointer = initial_stack_pointer;
 
-            process.flash = slice::from_raw_parts(app_flash_address, app_flash_size);
+            // process.flash = slice::from_raw_parts(app_flash_address, app_flash_size);
+            process.flash = app_flash;
 
             process.stored_state = Cell::new(Default::default());
             process.state = Cell::new(State::Unstarted);
@@ -1482,13 +1542,13 @@ impl<C: 'static + Chip> Process<'a, C> {
             });
 
             let flash_protected_size = process.header.get_protected_size() as usize;
-            let flash_app_start = app_flash_address as usize + flash_protected_size;
+            let flash_app_start_addr = app_flash.as_ptr() as usize + flash_protected_size;
 
             process.tasks.map(|tasks| {
                 tasks.enqueue(Task::FunctionCall(FunctionCall {
                     source: FunctionCallSource::Kernel,
                     pc: init_fn,
-                    argument0: flash_app_start,
+                    argument0: flash_app_start_addr,
                     argument1: process.memory.as_ptr() as usize,
                     argument2: process.memory.len() as usize,
                     argument3: process.app_break.get() as usize,
@@ -1510,34 +1570,35 @@ impl<C: 'static + Chip> Process<'a, C> {
                     process.stored_state.set(stored_state);
                 }
                 Err(_) => {
-                    if config::CONFIG.debug_load_processes {
-                        debug!(
-                            "[!] flash=[{:#010X}:{:#010X}] process={:?} - couldn't initialize process",
-                            app_flash_address as usize,
-                            app_flash_address as usize + app_flash_size,
-                            process_name
-                        );
-                    }
-                    return (None, app_flash_size, 0);
+                    // if config::CONFIG.debug_load_processes {
+                    //     debug!(
+                    //         "[!] flash=[{:#010X}:{:#010X}] process={:?} - couldn't initialize process",
+                    //         app_flash_address as usize,
+                    //         app_flash_address as usize + app_flash_size,
+                    //         process_name
+                    //     );
+                    // }
+                    return Ok((None, app_flash_size, 0));
                 }
             };
 
             // Mark this process as having something to do (it has to start!)
             kernel.increment_work();
 
-            return (
+            // return
+            Ok((
                 Some(process),
                 app_flash_size,
                 memory_padding_size + memory_size,
-            );
-        }
-        if config::CONFIG.debug_load_processes {
-            debug!(
-                "[!] flash={:#010X} - not a valid TBF header",
-                app_flash_address as usize
-            );
-        }
-        (None, 0, 0)
+            ))
+        // }
+        // if config::CONFIG.debug_load_processes {
+        //     debug!(
+        //         "[!] flash={:#010X} - not a valid TBF header",
+        //         app_flash_address as usize
+        //     );
+        // }
+        // (None, 0, 0)
     }
 
     /// Stop and clear a process's state.

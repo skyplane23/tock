@@ -432,7 +432,8 @@ pub unsafe fn reset_handler() {
     kernel::procs::load_processes(
         board_kernel,
         chip,
-        &_sapps as *const u8,
+        // &_sapps as *const u8,
+        slice::from_raw_parts(&_sapps as *const u8, 100000);
         &mut APP_MEMORY,
         &mut PROCESSES,
         FAULT_RESPONSE,
