@@ -1,8 +1,8 @@
 //! Tock Binary Format Header definitions and parsing code.
 
-use core::{mem, str};
 use core::convert::TryInto;
 use core::iter::Iterator;
+use core::{mem, str};
 
 /// Takes a value and rounds it up to be aligned % 4
 macro_rules! align4 {
@@ -174,7 +174,6 @@ impl core::convert::TryFrom<&[u8]> for TbfHeaderV2WriteableFlashRegion {
     }
 }
 
-
 /// Single header that can contain all parts of a v2 header.
 #[derive(Clone, Copy, Debug)]
 crate struct TbfHeaderV2 {
@@ -271,7 +270,8 @@ impl TbfHeader {
         match *self {
             TbfHeader::TbfHeaderV2(hd) => hd.writeable_regions.map_or(0, |wrs| {
                 wrs.iter().fold(0, |acc, wr| {
-                    if wr.writeable_flash_region_offset != 0 && wr.writeable_flash_region_size != 0 {
+                    if wr.writeable_flash_region_offset != 0 && wr.writeable_flash_region_size != 0
+                    {
                         acc + 1
                     } else {
                         acc
@@ -319,12 +319,14 @@ crate fn parse_tbf_header_lengths(app: &'static [u8; 8]) -> Result<(u16, u16, u3
         2 => {
             // In version 2, the next 16 bits after the version represent
             // the size of the TBF header in bytes.
-            let tbf_header_size = u16::from_le_bytes(app.get(2..4).ok_or(TbfParseError::BadLength)?.try_into()?);
+            let tbf_header_size =
+                u16::from_le_bytes(app.get(2..4).ok_or(TbfParseError::BadLength)?.try_into()?);
 
             // The next 4 bytes are the size of the entire app's TBF space
             // including the header. This also must be checked before parsing
             // this header and we trust the value in flash.
-            let tbf_size = u32::from_le_bytes(app.get(4..8).ok_or(TbfParseError::BadLength)?.try_into()?);
+            let tbf_size =
+                u32::from_le_bytes(app.get(4..8).ok_or(TbfParseError::BadLength)?.try_into()?);
 
             // Check that the header length isn't greater than the entire
             // app. If that at least looks good then return the sizes.
@@ -335,7 +337,7 @@ crate fn parse_tbf_header_lengths(app: &'static [u8; 8]) -> Result<(u16, u16, u3
             }
         }
 
-        _ => Err(TbfParseError::UnsupportedVersion)
+        _ => Err(TbfParseError::UnsupportedVersion),
     }
 }
 
@@ -387,7 +389,6 @@ crate fn parse_tbf_header(header: &'static [u8], version: u16) -> Result<TbfHead
             if remaining.len() == 0 {
                 // Just padding.
                 Ok(TbfHeader::Padding(tbf_header_base))
-
             } else {
                 // This is an actual app.
 
@@ -396,7 +397,6 @@ crate fn parse_tbf_header(header: &'static [u8], version: u16) -> Result<TbfHead
                 let mut main_pointer: Option<TbfHeaderV2Main> = None;
                 let mut wfr_pointer: [TbfHeaderV2WriteableFlashRegion; 4] = Default::default();
                 let mut app_name_str = "";
-
 
                 // Iterate the remainder of the header looking for TLV entries.
                 while remaining.len() > 0 {
@@ -429,8 +429,7 @@ crate fn parse_tbf_header(header: &'static [u8], version: u16) -> Result<TbfHead
                                 // Calculate how many writeable flash regions
                                 // there are specified in this header.
                                 let wfr_len = mem::size_of::<TbfHeaderV2WriteableFlashRegion>();
-                                let mut number_regions = tlv_header.length as usize
-                                    / wfr_len;
+                                let mut number_regions = tlv_header.length as usize / wfr_len;
 
                                 // Capture a slice with just the wfr information.
                                 let wfr_slice = remaining.get(0..tlv_header.length as usize)?;
@@ -443,7 +442,9 @@ crate fn parse_tbf_header(header: &'static [u8], version: u16) -> Result<TbfHead
 
                                 // Convert and store each wfr.
                                 for i in 0..number_regions {
-                                    wfr_pointer[i] = wfr_slice.get(i*wfr_len..(i+1)*wfr_len)?.try_into()?;
+                                    wfr_pointer[i] = wfr_slice
+                                        .get(i * wfr_len..(i + 1) * wfr_len)?
+                                        .try_into()?;
                                 }
                             }
                         }
@@ -475,6 +476,6 @@ crate fn parse_tbf_header(header: &'static [u8], version: u16) -> Result<TbfHead
                 Ok(TbfHeader::TbfHeaderV2(tbf_header))
             }
         }
-        _ => Err(TbfParseError::UnsupportedVersion)
+        _ => Err(TbfParseError::UnsupportedVersion),
     }
 }

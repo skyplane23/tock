@@ -1,10 +1,10 @@
 //! Support for creating and running userspace applications.
 
 use core::cell::Cell;
+use core::convert::TryInto;
 use core::fmt::Write;
 use core::ptr::write_volatile;
 use core::{mem, ptr, slice, str};
-use core::convert::TryInto;
 
 use crate::callback::{AppId, CallbackId};
 use crate::capabilities::ProcessManagementCapability;
@@ -20,7 +20,6 @@ use crate::sched::Kernel;
 use crate::syscall::{self, Syscall, UserspaceKernelBoundary};
 use crate::tbfheader;
 use core::cmp::max;
-
 
 pub enum ProcessLoadError {
     /// The TBF header for the app could not be successfully parsed.
@@ -50,7 +49,6 @@ impl From<tbfheader::TbfParseError> for ProcessLoadError {
         ProcessLoadError::TbfHeaderParseFailure(error)
     }
 }
-
 
 /// Helper function to load processes from flash into an array of active
 /// processes. This is the default template for loading processes, but a board
@@ -96,7 +94,6 @@ pub fn load_processes<C: Chip>(
                 i,
             )?;
 
-
             if config::CONFIG.debug_load_processes {
                 debug!(
                     "Loaded process[{}] from flash=[{:#010X}:{:#010X}] into sram=[{:#010X}:{:#010X}] = {:?}",
@@ -126,7 +123,6 @@ pub fn load_processes<C: Chip>(
             app_memory_ptr = app_memory_ptr.add(memory_offset);
             app_memory_size -= memory_offset;
         }
-
     }
 
     Ok(())
@@ -1317,7 +1313,8 @@ impl<C: 'static + Chip> Process<'a, C> {
         // parse out the length of the tbf header and app. We then use those
         // values to see if we have enough flash remaining to parse the
         // remainder of the header.
-        let (version, header_length, app_length) = tbfheader::parse_tbf_header_lengths(remaining_app_flash.get(0..8)?.try_into()?)?;
+        let (version, header_length, app_length) =
+            tbfheader::parse_tbf_header_lengths(remaining_app_flash.get(0..8)?.try_into()?)?;
 
         // Get slices for all of the flash for the app, and for just the header.
         // This lets us error out here if there is not enough flash remaining
@@ -1358,8 +1355,9 @@ impl<C: 'static + Chip> Process<'a, C> {
 
         // Otherwise, actually load the app.
         let mut min_app_ram_size = tbf_header.get_minimum_app_ram_size() as usize;
-        let init_fn =
-            app_flash.as_ptr().offset(tbf_header.get_init_function_offset() as isize) as usize;
+        let init_fn = app_flash
+            .as_ptr()
+            .offset(tbf_header.get_init_function_offset() as isize) as usize;
 
         // Initialize MPU region configuration.
         let mut mpu_config: <<C as Chip>::MPU as MPU>::MpuConfig = Default::default();
@@ -1379,9 +1377,9 @@ impl<C: 'static + Chip> Process<'a, C> {
             if config::CONFIG.debug_load_processes {
                 debug!(
                     "[!] flash=[{:#010X}:{:#010X}] process={:?} - couldn't allocate flash region",
-                        app_flash.as_ptr() as usize,
-                        app_flash.as_ptr() as usize + app_flash_size,
-                        process_name
+                    app_flash.as_ptr() as usize,
+                    app_flash.as_ptr() as usize + app_flash_size,
+                    process_name
                 );
             }
             return Ok((None, app_flash_size, 0));
