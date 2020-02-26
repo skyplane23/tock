@@ -1368,7 +1368,6 @@ impl<C: 'static + Chip> Process<'a, C> {
         if chip
             .mpu()
             .allocate_region(
-                // TODO CHANGE TO SLICE
                 app_flash.as_ptr(),
                 app_flash_size,
                 app_flash_size,
@@ -1505,7 +1504,6 @@ impl<C: 'static + Chip> Process<'a, C> {
         process.current_stack_pointer = Cell::new(initial_stack_pointer);
         process.original_stack_pointer = initial_stack_pointer;
 
-        // process.flash = slice::from_raw_parts(app_flash_address, app_flash_size);
         process.flash = app_flash;
 
         process.stored_state = Cell::new(Default::default());
