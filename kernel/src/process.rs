@@ -21,6 +21,7 @@ use crate::syscall::{self, Syscall, UserspaceKernelBoundary};
 use crate::tbfheader;
 use core::cmp::max;
 
+/// Errors that can occur when trying to load and create processes.
 pub enum ProcessLoadError {
     /// The TBF header for the app could not be successfully parsed.
     TbfHeaderParseFailure(tbfheader::TbfParseError),
